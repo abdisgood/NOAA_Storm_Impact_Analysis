@@ -1,0 +1,225 @@
+---
+title: "NOAA_Storm_Impact_Analysis_Report"
+author: "Syed Abdullah Hasan"
+date: "6/16/2021"
+output: html_document
+---
+```{r Load Required Libraries, message=FALSE, warning=FALSE}
+library (ggplot2)
+library (dplyr)
+library (knitr)
+library (lubridate)
+library (ggpubr)
+library (reshape2)
+```
+  
+## Synopsis  
+This report outlines a basic analysis of weather event data from the National Oceanic and Atmosphere Administration (NOAA) database to determine the health and economic impact of adverse weather events. The analysis focuses on highlighting the type of event causing the most severe impact and how this has changed over time. In summary, the report finds that tornadoes and flood events may be attributed the most severe health and economic impact across the United States, and this has increased significantly since 1994.
+  
+## Data Processing
+
+```{r Data Processing Code, messages=FALSE, warning=FALSE, cache= TRUE}
+fileURL <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+docURL <- "https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf"
+faqURL <- "https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf"
+
+download.file (fileURL,"./data.csv.bz2")
+data <- read.csv("./data.csv.bz2")
+unlink("./data.csv.bz2")
+
+```
+The data set for the report has been downloaded from [here](`r fileURL`) with accompanying documentation available [here](`r docURL`). In order to prepare data for analysis, the following items have been processed:  
+
+1. Beginning and ending dates are converted to date-time objects with the appropriate time-zones - event start year is included as a factor variable;
+  
+```{r Data Processing Code - Date Processing, warning=FALSE}
+BGN_DT <- parse_date_time(data$BGN_DATE, "mdy hms", tz = data$TIME_Zone) + 
+                dminutes(as.numeric(substr(data$BGN_TIME,0,2))*60+
+                         as.numeric(substr(data$BGN_TIME,2,2)))
+
+END_DT <- parse_date_time(data$END_DATE, "mdy hms", tz = data$TIME_Zone) + 
+                dminutes(as.numeric(substr(data$END_TIME,0,2))*60+
+                         as.numeric(substr(data$END_TIME,2,2)))
+
+data$BDN_DT <- BGN_DT
+data$END_DT <- END_DT
+data$BGN_YR <- as.factor(year(BGN_DT))
+```
+
+2. Event types are reclassified for clarity - this step is essential since there are many event classification errors and repetitions in the original data which does not appear to be aligned with NOAA's standard classification system.
+  
+```{r Data Processing Code - Event Reclassification}
+event <- data.frame(EVTYPE = unique(data$EVTYPE)[order(unique(data$EVTYPE))],
+                    EVENT_TYPE = "")
+event[grep("FLOOD", toupper(event$EVTYPE)),2] = "FLOOD"
+event[grep("CHILL", toupper(event$EVTYPE)),2] = "WIND CHILL"
+event[grep("HEAT", toupper(event$EVTYPE)),2] = "EXCESSIVE HEAT"
+event[grep("COLD", toupper(event$EVTYPE)),2] = "EXCESSIVE COLD"
+event[grep("HURRICANE", toupper(event$EVTYPE)),2] = "HURRICANE"
+event[grep("SNOW", toupper(event$EVTYPE)),2] = "SNOW"
+event[grep("ICE STORM", toupper(event$EVTYPE)),2] = "ICE STORM"
+event[grep("AVALANCHE", toupper(event$EVTYPE)),2] = "AVALANCHE"
+event[grep("DRY", toupper(event$EVTYPE)),2] = "DRY CONDITIONS"
+event[grep("HEAVY RAIN|
+           HEAVY PRECIPITATION|
+           EXCESSIVE PRECIPITATION|
+           RECORD PRECIPITATION", toupper(event$EVTYPE)),2] = "HEAVY RAIN"
+
+event[grep("^TORNADO", toupper(event$EVTYPE)),2] = "TORNADO"
+event[grep("^HIGH WIND", toupper(event$EVTYPE)),2] = "HIGH WIND"
+event[grep("^TSTM|^ TSTM|^THUNDERSTORM", toupper(event$EVTYPE)),2] = "THUNDERSTORMS"
+event[grep("^BLIZZARD", toupper(event$EVTYPE)),2] = "BLIZZARD"
+event[grep("^HAIL", toupper(event$EVTYPE)),2] = "HAIL"
+event[grep("^LIGHTNING|^ LIGHTNING", toupper(event$EVTYPE)),2] = "LIGHTNING"
+event[grep("^WINTER STORM", toupper(event$EVTYPE)),2] = "WINTER STORM"
+event[grep("^TROPICAL STORM", toupper(event$EVTYPE)),2] = "TROPICAL STORM"
+event[grep("^COASTAL STORM|COASTALSTORM", toupper(event$EVTYPE)),2] = "COASTAL STORM"
+
+event$EVENT_TYPE <- na_if(event$EVENT_TYPE,"")
+event$EVENT_TYPE[is.na(event$EVENT_TYPE)] <- "ALL OTHER EVENTS"
+
+data <- merge(data, event, by = "EVTYPE", all = T)
+```
+
+3. Economic impact is determined by first converting property and crop damage expense units from characters to numbers and adjusting for any data input errors.
+  
+```{r Data Processing Code - Unit Reclassification}
+pexp <- as.factor(data$PROPDMGEXP)
+cexp <- as.factor(data$CROPDMGEXP)
+
+levels(pexp) <- list("1" = "+", 
+                     "10"=c("0", "1","2","3","4","5","6","7","8"), 
+                     "100" = c("h","H"),
+                     "1000"="K", 
+                     "1000000" = c("m","M"), 
+                     "1000000000" = "B",
+                     "0"=c("","-","?"))
+
+levels(cexp) <- list("10"=c("0","2"),  
+                     "1000"=c("K","k"), 
+                     "1000000" = c("m","M"), 
+                     "1000000000" = "B",
+                     "0"=c("","?"))
+
+pexp <- as.numeric(as.character(pexp))
+cexp <- as.numeric(as.character(cexp))
+
+data$P_UNIT <- pexp
+data$C_UNIT <- cexp
+
+data$P_IMPACT <- with(data, PROPDMG*P_UNIT)
+data$C_IMPACT <- with(data, CROPDMG*C_UNIT)
+```
+  
+## Results  
+This report will provide a break-down of analysis on two main subjects:  
+ - Impact on weather events on human health across the United States;
+ - Economic consequences of weather events across the United States.  
+  
+#### PART 1 - Across the United States, which types of events are most harmful with respect to population health? 
+  
+```{r Data Analysis Code - Q1 Part 1, cache=TRUE}
+data_health <- data%>%group_by(EVENT_TYPE)%>%summarise("FATALITIES" = sum(FATALITIES),
+                                  "INJURIES" = sum(INJURIES))
+
+data_health <- melt(data_health, id = "EVENT_TYPE", 
+                    measure.vars = c("FATALITIES", "INJURIES"))
+
+names(data_health) <- c("Event Type", 
+                        "Health Impact", 
+                        "Frequency")
+
+data_health_by_year <- data%>%group_by(BGN_YR)%>%summarise("FATALITIES" = sum(FATALITIES),
+                                  "INJURIES" = sum(INJURIES))                             
+
+data_health_by_year <- melt( data_health_by_year, id = "BGN_YR",
+                             measure.vars = c("FATALITIES", "INJURIES"))
+
+names(data_health_by_year) <- c("Year", 
+                        "Health Impact", 
+                        "Frequency")
+```
+
+Based on a review of the data provided, impact on population health may be gauged by considering the number of injuries and fatalities resulting from weather events. The number of weather events in the data set have been reclassified from *`r length(unique(data$EVTYPE))`* to *`r nrow(data_health)`* categories. The overall health toll is defined in terms of total injuries and fatalities with the key results presented in the charts below.  
+
+```{r Data Presentation Code - Q1 Part 2, fig.height = 8, fig.width=10}
+g1 <- ggplot(data = data_health, aes(x = reorder(`Event Type`,-`Frequency`),
+                                     y = `Frequency`,
+                                     fill = `Health Impact`)) +
+        geom_bar (position = "stack", stat = "identity") +
+        theme(legend.position = "none",
+              axis.text.x = element_text(angle=45, vjust=1, hjust=1, size=7),
+              title = element_text(face="bold"))+
+        labs (x = "Event Type",
+              title = "Chart 1a - Impact of Weather Events on Population Health, by type")
+
+g2 <- ggplot(data = data_health_by_year, aes(x=`Year`,
+                                             y= `Frequency`,
+                                             fill = `Health Impact`))+
+        geom_bar(position = "stack", stat = "identity") +
+        theme(legend.position = "bottom",
+              axis.text.x = element_text(angle=45, vjust=1, hjust=1, size=7),
+              title = element_text(face="bold"))+
+        labs (x = "Year",
+              title = "Chart 1b - Impact of Weather Events on Population Health, by year")
+
+gridExtra::grid.arrange (g1,g2)
+```
+
+Chart 1a shows that Tornadoes have the highest health impact amongst weather events in the United States, followed distantly by heat, thunderstorm and flood related events. This may be due to the fact that Tornadoes are inherently unpredictable and sudden, making it difficult to prepare against.  
+
+Furthermore, Chart 1b illustrates that the health impact of weather events in the United States has worsened over time. Events after the year 1994 account for a disproportionate increase in the number of injuries and fatalities as compared with previous years. This may be a feature of the data set, resulting from improvement in data collection capabilities and scope over time. However, the more likely explanation is attributable to changes in weather patterns affecting the United States.
+
+#### PART 2 - Across the United States, which types of events have the greatest economic consequences?  
+To assess this question, economic consequences are considered in terms of value estimates for crop and property damage. The analysis is further broken down into the following components:  
+- Which events have had the greatest economic consequences since 1950?
+- How has the economic impact changed over time since 1950?
+
+```{r Data Analysis Code - Q2 Part 1, message = FALSE, warning = FALSE}
+data_economy <- data%>%group_by(EVENT_TYPE)%>%
+                       summarise("Property" = sum(P_IMPACT),
+                                 "Crops" = sum(C_IMPACT))
+
+data_economy <- melt(data_economy, id=c("EVENT_TYPE"),
+                     measure.vars = c("Property","Crops"))
+
+names(data_economy) <- c("Event Type", "Category", "Value")
+
+data_economy_year <- data%>%group_by(BGN_YR)%>%
+                            summarise("Property" = sum(P_IMPACT),
+                                      "Crops" = sum(C_IMPACT))
+
+data_economy_year <- melt(data_economy_year, id=c("BGN_YR"),
+                     measure.vars = c("Property","Crops"))
+
+names(data_economy_year) <- c("Year", "Category", "Value")
+
+```
+To conduct this analysis, the data set is grouped by event type and year respectively to determine economic impact on account of property and crop losses. From the charts below, it is clear to see that adverse weather events generate economic losses primarily due to property damage. The prime driver of property losses are damage due to floods, followed by hurricanes, other weather events and tornadoes.
+
+From Chart 2b, we can clearly determine that the years 2005 and 2006 accounted for the worst economic impact due to adverse weather events. In general, the economic impact of adverse weather events has significantly deteriorated after 1994 as compared with previous years. 
+
+```{r Presentation Code - Q2 Part 2, fig.height=8, fig.width =10}
+g3 <- ggplot(data = data_economy, aes(x = reorder(`Event Type`,-`Value`),
+                                     y = `Value`,
+                                     fill = `Category`)) +
+        geom_bar (position = "stack", stat = "identity") +
+        theme(legend.position = "none",
+              axis.text.x = element_text(angle=45, vjust=1, hjust=1, size=7),
+              title = element_text(face="bold"))+
+        labs (x = "Event Type",
+              title = "Chart 2a - Impact of Weather Events on Economy, by event")
+
+g4 <- ggplot(data = data_economy_year, aes(x=`Year`,
+                                             y= `Value`,
+                                             fill = `Category`))+
+        geom_bar(position = "stack", stat = "identity") +
+        theme(legend.position = "bottom",
+              axis.text.x = element_text(angle=45, vjust=1, hjust=1, size=7),
+              title = element_text(face="bold"))+
+        labs (x = "Year",
+              title = "Chart 2b - Impact of Weather Events on Economy over time")
+
+gridExtra::grid.arrange (g3,g4)
+```
+
